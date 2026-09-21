@@ -1,0 +1,20 @@
+{
+  "name": "yaniv-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Yaniv game server – Express + Socket.IO, also serves the built client from ./dist",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
