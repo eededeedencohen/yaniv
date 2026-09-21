@@ -52,6 +52,7 @@ io.on('connection', (socket) => {
   /** Runs a room action, broadcasts the resulting events + fresh state to everyone. */
   const act = (ack, fn) => {
     try {
+      if (room && room.closed) { room = null; playerId = null; }
       if (!room || !playerId) throw new GameError('אינך בחדר');
       const events = fn() || [];
       room.broadcast(events);
@@ -112,6 +113,24 @@ io.on('connection', (socket) => {
     playerId = null;
     r.broadcast([{ type: 'left' }, ...events]);
     ok(ack);
+  });
+
+  // Host closes the room: everyone is sent back to the home screen and the room is deleted.
+  socket.on('room:close', (_data, ack) => {
+    try {
+      if (!room || !playerId) throw new GameError('אינך בחדר');
+      if (playerId !== room.hostId) throw new GameError('רק המארח יכול לסגור את החדר');
+      const r = room;
+      r.closed = true;
+      for (const p of r.players) {
+        if (p.socketId && p.id !== playerId) io.to(p.socketId).emit('roomClosed');
+      }
+      rooms.rooms.delete(r.code);
+      socket.leave(r.code);
+      room = null;
+      playerId = null;
+      ok(ack);
+    } catch (err) { fail(ack, err); }
   });
 
   socket.on('room:setName', ({ name } = {}, ack) => act(ack, () => {
@@ -177,7 +196,7 @@ io.on('connection', (socket) => {
   }
 
   socket.on('disconnect', () => {
-    if (!room) return;
+    if (!room || room.closed) return;
     room.setConnected(playerId, socket.id, false);
     room.broadcast([{ type: 'disconnected', playerId }]);
   });
