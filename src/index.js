@@ -142,11 +142,19 @@ io.on('connection', (socket) => {
     return [{ type: 'renamed', playerId, name: clean }];
   }));
 
-  socket.on('room:setOptions', ({ targetScore } = {}, ack) => act(ack, () => {
+  socket.on('room:setOptions', ({ targetScore, holdMs } = {}, ack) => act(ack, () => {
     if (playerId !== room.hostId) throw new GameError('רק המארח משנה הגדרות');
-    if (room.game && room.game.phase !== 'gameOver') throw new GameError('אי אפשר לשנות באמצע משחק');
-    if (![100, 200].includes(Number(targetScore))) throw new GameError('ניקוד יעד לא חוקי');
-    room.targetScore = Number(targetScore);
+    if (targetScore !== undefined) {
+      if (room.game && room.game.phase !== 'gameOver') throw new GameError('אי אפשר לשנות באמצע משחק');
+      if (![100, 200].includes(Number(targetScore))) throw new GameError('ניקוד יעד לא חוקי');
+      room.targetScore = Number(targetScore);
+    }
+    if (holdMs !== undefined) {
+      // How long players hold a card before it lifts for dragging – may be tuned mid-game.
+      const ms = Number(holdMs);
+      if (!(ms >= 200 && ms <= 1500)) throw new GameError('משך לחיצה לא חוקי');
+      room.holdMs = ms;
+    }
     return [];
   }));
 

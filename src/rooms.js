@@ -27,6 +27,7 @@ export class Room {
     this.hostId = null;
     this.game = null;
     this.targetScore = 200;
+    this.holdMs = 500;       // long-press duration before cards can be dragged to the pile
     this.createdAt = Date.now();
     this.touchedAt = Date.now();
   }
@@ -119,6 +120,7 @@ export class Room {
       phase: this.phase,
       hostId: this.hostId,
       targetScore: this.targetScore,
+      holdMs: this.holdMs,
       me: playerId,
       players: this.players.map((p) => ({
         id: p.id,
