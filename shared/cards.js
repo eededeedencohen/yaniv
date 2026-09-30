@@ -35,7 +35,7 @@ export function buildDeck() {
   const cards = [];
   for (const color of COLORS) {
     for (let v = 1; v <= 10; v++) {
-      cards.push({ id: `${color}_${v}`, color, kind: KIND.NUMBER, value: v, image: `${color}_${v}.png` });
+      cards.push({ id: `${color}_${v}`, color, kind: KIND.NUMBER, value: v, image: `${color}_${v}.webp` });
     }
   }
   const power = [
@@ -48,8 +48,9 @@ export function buildDeck() {
   ];
   for (const [kind, count, file] of power) {
     for (let i = 1; i <= count; i++) {
+      // Copies of the same power card get their own id but share one picture.
       const suffix = count > 1 ? `_${i}` : '';
-      cards.push({ id: `purple_${file}${suffix}`, color: 'purple', kind, value: null, image: `purple_${file}${suffix}.png` });
+      cards.push({ id: `purple_${file}${suffix}`, color: 'purple', kind, value: null, image: `purple_${file}.webp` });
     }
   }
   return cards;
