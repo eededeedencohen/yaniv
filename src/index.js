@@ -1,6 +1,6 @@
 // Yaniv server: Express (serves the built client from ./dist) + Socket.IO real-time game protocol.
 import { createServer } from 'node:http';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,11 +18,20 @@ const app = express();
 const http = createServer(app);
 const io = new Server(http, {
   cors: { origin: true, credentials: true },
-  pingInterval: 10000,
-  pingTimeout: 20000,
+  // Notice dead phone connections quickly so "disconnected" badges and rejoin are snappy.
+  pingInterval: 8000,
+  pingTimeout: 10000,
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.rooms.size }));
+// Build id of the client in ./dist (written by the client build). Clients compare it with their own
+// to offer an "update" button when an installed app is still running an older cached version.
+function readBuildId() {
+  try { return JSON.parse(readFileSync(path.join(DIST, 'version.json'), 'utf8')).buildId || null; } catch { return null; }
+}
+const BUILD_ID = readBuildId();
+
+app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.rooms.size, online: online.size, buildId: BUILD_ID }));
+app.get('/version.json', (_req, res) => { res.setHeader('Cache-Control', 'no-store'); res.json({ buildId: BUILD_ID }); });
 
 // Serve the built client (created by `npm run deploy` in ../client) when it exists.
 if (existsSync(DIST)) {
@@ -38,15 +47,49 @@ if (existsSync(DIST)) {
 
 const rooms = new RoomManager(io);
 
+// ---- presence: who is in the app right now, and the list of rooms (shown on the home screen) ----
+const online = new Map(); // socket.id → { token, name }
+
+function lobbySnapshot() {
+  const summaries = rooms.summaries();
+  const roomOfToken = new Map();
+  for (const r of summaries) for (const t of r.tokens) roomOfToken.set(t, r);
+  const seen = new Set();
+  const people = [];
+  for (const { token, name } of online.values()) {
+    if (!token || seen.has(token)) continue; // one entry per person, even with several tabs
+    seen.add(token);
+    const r = roomOfToken.get(token);
+    people.push({
+      name: name || 'אורח',
+      room: r ? { isPublic: r.isPublic, code: r.isPublic ? r.code : null, phase: r.phase } : null,
+    });
+  }
+  return {
+    online: people,
+    rooms: summaries.filter((r) => r.isPublic).map(({ tokens, ...r }) => r),
+  };
+}
+
+let lobbyTimer = null;
+function lobbyChanged() {
+  if (lobbyTimer) return;
+  lobbyTimer = setTimeout(() => { lobbyTimer = null; io.emit('lobby', lobbySnapshot()); }, 250);
+}
+rooms.onChange = lobbyChanged;
+
 io.on('connection', (socket) => {
   let room = null;
   let playerId = null;
 
+  socket.emit('hello', { buildId: BUILD_ID });
+  socket.emit('lobby', lobbySnapshot());
+
   const ok = (ack, data = {}) => typeof ack === 'function' && ack({ ok: true, ...data });
-  const fail = (ack, err) => {
+  const fail = (ack, err, code) => {
     const message = err instanceof GameError ? err.message : 'משהו השתבש';
     if (!(err instanceof GameError)) console.error(err);
-    if (typeof ack === 'function') ack({ ok: false, error: message });
+    if (typeof ack === 'function') ack({ ok: false, error: message, code });
   };
 
   /** Runs a room action, broadcasts the resulting events + fresh state to everyone. */
@@ -56,6 +99,7 @@ io.on('connection', (socket) => {
       if (!room || !playerId) throw new GameError('אינך בחדר');
       const events = fn() || [];
       room.broadcast(events);
+      lobbyChanged();
       ok(ack);
     } catch (err) {
       fail(ack, err);
@@ -67,12 +111,23 @@ io.on('connection', (socket) => {
     playerId = p.id;
     socket.join(r.code);
     r.setConnected(p.id, socket.id, true);
+    lobbyChanged();
   };
 
-  socket.on('room:create', ({ name, token } = {}, ack) => {
+  // Presence: the client introduces itself (and again whenever the name changes).
+  socket.on('presence:hello', ({ token, name } = {}) => {
+    online.set(socket.id, { token: String(token || ''), name: String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, 14) });
+    lobbyChanged();
+  });
+
+  // Lightweight liveness check used by clients when the app returns to the foreground.
+  socket.on('app:ping', (ack) => { if (typeof ack === 'function') ack(); });
+
+  socket.on('room:create', ({ name, token, isPublic } = {}, ack) => {
     try {
       if (!token) throw new GameError('חסר מזהה');
       const r = rooms.create();
+      r.isPublic = !!isPublic;
       const p = r.addPlayer({ token, name, socketId: socket.id });
       enter(r, p);
       r.broadcast([]);
@@ -84,7 +139,7 @@ io.on('connection', (socket) => {
     try {
       if (!token) throw new GameError('חסר מזהה');
       const r = rooms.get(code);
-      if (!r) throw new GameError('חדר לא נמצא – בדוק את הקוד');
+      if (!r) throw new GameError('חדר לא נמצא - בדוק את הקוד');
       let p = r.findByToken(token);
       if (!p) p = r.addPlayer({ token, name, socketId: socket.id });
       enter(r, p);
@@ -94,14 +149,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('room:rejoin', ({ code, token } = {}, ack) => {
-    try {
-      const r = rooms.get(code);
-      const p = r && r.findByToken(token);
-      if (!p) throw new GameError('החדר כבר לא קיים');
-      enter(r, p);
-      r.broadcast([]);
-      ok(ack, { code: r.code, playerId: p.id });
-    } catch (err) { fail(ack, err); }
+    const r = rooms.get(code);
+    const p = r && r.findByToken(token);
+    // NO_ROOM tells the client the room is really gone (as opposed to a slow / failed request).
+    if (!p) return fail(ack, new GameError('החדר כבר לא קיים'), 'NO_ROOM');
+    enter(r, p);
+    r.broadcast([]);
+    return ok(ack, { code: r.code, playerId: p.id });
   });
 
   socket.on('room:leave', (_data, ack) => {
@@ -111,7 +165,9 @@ io.on('connection', (socket) => {
     socket.leave(r.code);
     room = null;
     playerId = null;
-    r.broadcast([{ type: 'left' }, ...events]);
+    if (r.players.length === 0) rooms.remove(r.code);
+    else r.broadcast([{ type: 'left' }, ...events]);
+    lobbyChanged();
     ok(ack);
   });
 
@@ -125,10 +181,11 @@ io.on('connection', (socket) => {
       for (const p of r.players) {
         if (p.socketId && p.id !== playerId) io.to(p.socketId).emit('roomClosed');
       }
-      rooms.rooms.delete(r.code);
+      rooms.remove(r.code);
       socket.leave(r.code);
       room = null;
       playerId = null;
+      lobbyChanged();
       ok(ack);
     } catch (err) { fail(ack, err); }
   });
@@ -139,18 +196,21 @@ io.on('connection', (socket) => {
     if (!clean) throw new GameError('השם ריק');
     p.name = clean;
     if (room.game) room.game.player(playerId).name = clean;
+    const me = online.get(socket.id);
+    if (me) me.name = clean;
     return [{ type: 'renamed', playerId, name: clean }];
   }));
 
-  socket.on('room:setOptions', ({ targetScore, holdMs } = {}, ack) => act(ack, () => {
+  socket.on('room:setOptions', ({ targetScore, holdMs, isPublic } = {}, ack) => act(ack, () => {
     if (playerId !== room.hostId) throw new GameError('רק המארח משנה הגדרות');
+    if (isPublic !== undefined) room.isPublic = !!isPublic;
     if (targetScore !== undefined) {
       if (room.game && room.game.phase !== 'gameOver') throw new GameError('אי אפשר לשנות באמצע משחק');
       if (![100, 200].includes(Number(targetScore))) throw new GameError('ניקוד יעד לא חוקי');
       room.targetScore = Number(targetScore);
     }
     if (holdMs !== undefined) {
-      // How long players hold a card before it lifts for dragging – may be tuned mid-game.
+      // How long players hold a card before it lifts for dragging - may be tuned mid-game.
       const ms = Number(holdMs);
       if (!(ms >= 200 && ms <= 1500)) throw new GameError('משך לחיצה לא חוקי');
       room.holdMs = ms;
@@ -204,9 +264,11 @@ io.on('connection', (socket) => {
   }
 
   socket.on('disconnect', () => {
+    online.delete(socket.id);
+    lobbyChanged();
     if (!room || room.closed) return;
-    room.setConnected(playerId, socket.id, false);
-    room.broadcast([{ type: 'disconnected', playerId }]);
+    // Ignored when the player already reconnected on a newer socket.
+    if (room.setConnected(playerId, socket.id, false)) room.broadcast([{ type: 'disconnected', playerId }]);
   });
 });
 
@@ -214,5 +276,5 @@ http.listen(PORT, () => {
   console.log(`Yaniv server listening on http://localhost:${PORT}`);
   const lan = Object.values(networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal);
   if (lan) console.log(`LAN: http://${lan.address}:${PORT}`);
-  console.log(existsSync(DIST) ? 'Serving client from ./dist' : 'No ./dist yet – run `npm run deploy` in ../client');
+  console.log(existsSync(DIST) ? 'Serving client from ./dist' : 'No ./dist yet - run `npm run deploy` in ../client');
 });

@@ -99,7 +99,7 @@ test('scoring: successful yaniv gives 0 (or negative sum)', () => {
 test('scoring: caught yaniv = sum + 30, super yaniv holder = sum + 50', () => {
   const r = scoreRound([
     { id: 'a', hand: cards('green_2', 'blue_3') }, // 5
-    { id: 'b', hand: cards('green_5') },            // 5 – equal counts as caught
+    { id: 'b', hand: cards('green_5') },            // 5 - equal counts as caught
   ], 'a', 'yaniv');
   assert.equal(r.caught, true);
   assert.deepEqual(r.points, { a: 35, b: 5 });

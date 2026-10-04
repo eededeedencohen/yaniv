@@ -1,4 +1,4 @@
-// Authoritative Yaniv game engine. Pure game logic – no sockets, no timers.
+// Authoritative Yaniv game engine. Pure game logic - no sockets, no timers.
 import { buildDeck, KIND, handSum } from '../../shared/cards.js';
 import {
   validateDiscard, takeableCards, canDeclareYaniv, isSuperYanivState, scoreRound, EXACT_TARGET_BONUS,
@@ -80,7 +80,7 @@ export class Game {
     if (this.phase !== 'playing') throw new GameError('הסיבוב הסתיים');
     if (this.currentPlayer.id !== playerId) throw new GameError('לא התור שלך');
     if (step && this.step !== step) {
-      throw new GameError(step === 'discard' ? 'כבר זרקת – עכשיו קח קלף' : 'קודם זרוק קלפים');
+      throw new GameError(step === 'discard' ? 'כבר זרקת - עכשיו קח קלף' : 'קודם זרוק קלפים');
     }
   }
 
